@@ -39,6 +39,34 @@ pip install -r requirements.txt
 ```
 
 ---
+## ⚠️ Gotchas & Fixes (this fork)
+
+Notes from reproducing this pipeline with **open-source models (Qwen3-32B via vLLM)** and **re-sourcing the datasets**, since several upstream links/instructions are stale. Kept here so the next person doesn't lose a day to them.
+
+### Dataset sourcing (some upstream links are dead/wrong)
+- **MMQA's original repo is GONE.** [`github.com/WuJian1995/MMQA`](https://github.com/WuJian1995/MMQA) (linked in the _Original Datasets_ table) now 404s. The multi-table MMQA (Wu et al., ICLR 2025) has migrated to the HF dataset **[`table-benchmark/mmqa`](https://huggingface.co/datasets/table-benchmark/mmqa)** → `MMQA/processed/mmqa_two_table.jsonl` (936MB) + `mmqa_three_table.jsonl` (92MB).
+  - ⚠️ **Do NOT grab `TableQAKit/MMQA`** on HF — that is a *different* dataset (the **multimodal** MMQA, Talmor 2021, with images/captions). Same acronym, wrong data.
+  - Each record stores the table as a JSON **string** under `table` and has **no SQL** field. Convert to the `Synthesized_{two,three}_table.json` schema with `data_selection/MMQA/convert_hf_mmqa.py`.
+- **TableEval `TableEval-meta.jsonl` is NOT on HuggingFace** — the HF dataset `wenge-research/TableEval` ships only `TableEval-test.jsonl`. The meta file lives in the **GitHub** repo: `raw.githubusercontent.com/wenge-research/TableEval/main/data/TableEval-meta.jsonl`.
+- **BIRD** is on Alibaba OSS (`bird-bench.oss-cn-beijing.aliyuncs.com/{dev,train}.zip`). Each zip contains a **nested** `*_databases.zip` that must be unzipped a **second time** to get `<db>/<db>.sqlite`. The dev folder is `dev_20240627` (there is no separate `dev_20240627.zip` — it is inside `dev.zip`; that URL 403s).
+
+### Original README inaccuracies
+- Quick Tour lists `run_nl2sql_example.sh` / `run_gpt_eval_example.sh`, but the real files are **`scripts/run_nl2sql.sh`** / **`scripts/run_eval.sh`**.
+- The BIRD section mentions `scripts/run_bird_splits.sh`; the real file is **`scripts/run_bird_subset_selection.sh`**.
+
+### Pipeline data-flow
+- `sample_data/example.json` has **no `raw_tables` / `verbalized_data`**, so it cannot be fed directly to `llm_infer_s5.py` (semi/structured) or `nl2sql_baseline_s6.py` (raw mode). Run Steps 1→4 first; the run scripts already point at the Step-4 output.
+- `verbalization_row_s4_1.py` (the row-based verbalizer that emits `verbalized_data`) **always re-executes `item["SQL"]`** — it has no `--no_sql`. MMQA (no SQL) therefore needs a no-SQL path that keeps the gold `answer`.
+- Step-1 column "matching" is a **naive case-insensitive substring** test of the column name against the SQL string (not `sql_metadata`); it can over/under-match.
+
+### Open-source / local-model setup (this fork)
+- Env is managed with **uv**, not conda (README above still shows conda). Two venvs avoid dependency coupling: **`.venv`** (pipeline + `analysis/` + HF attention; `torch==2.7.0`) and **`.venv-vllm`** (vLLM serving only). Pin `torch==2.7.0` — a bare `pip install torch` pulls a very large CUDA-13 build.
+- `src/{column_selection_s2,template_generation_s3,llm_infer_s5}.py` now honor an **`OPENAI_BASE_URL`** env var so they can target a local vLLM OpenAI-compatible endpoint; unset = original OpenAI behavior.
+- **vLLM does not expose attention weights.** The attention study (`analysis/`, see `analysis/README.md`) loads the model via HF Transformers with `attn_implementation="eager"`. `output_attentions=True` on a 32B model OOMs (all 64 layers materialized at once) — `analysis/attention_capture.py` monkeypatches Qwen3's `eager_attention_forward` to reduce-and-free per layer.
+- **Qwen3 "thinking" mode** must be disabled for QA or JSON answer parsing breaks: clients pass `chat_template_kwargs={"enable_thinking": false}`.
+- Large datasets/weights are **git-ignored** and must **not** be committed (see Disclosure — dataset redistribution is not permitted).
+
+---
 ## 🚀 Quick Tour
 Five ready-to-use bash scripts are included for quick runs:
 

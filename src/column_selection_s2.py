@@ -16,6 +16,7 @@ Outputs:
 
 import argparse
 import json
+import os
 import re
 import time
 from typing import Any, Dict, Iterable, List, Tuple
@@ -105,8 +106,12 @@ def load_prompt_template(path: str) -> str:
 
 
 def create_client(api_key: str) -> OpenAI:
-    """Create an OpenAI client with the given API key."""
-    return OpenAI(api_key=api_key)
+    """Create an OpenAI client with the given API key.
+
+    If OPENAI_BASE_URL is set (e.g. a local vLLM OpenAI-compatible endpoint),
+    the client is pointed there; otherwise it talks to the real OpenAI API.
+    """
+    return OpenAI(api_key=api_key, base_url=os.environ.get("OPENAI_BASE_URL") or None)
 
 
 def call_gpt(

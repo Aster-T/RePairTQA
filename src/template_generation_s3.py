@@ -13,6 +13,7 @@ Two modes:
 
 import argparse
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -215,7 +216,7 @@ def generate_templates(
 
     examples_map = load_examples_map(match_df)
     prompt_template = Path(prompt_template_path).read_text(encoding="utf-8")
-    client = OpenAI(api_key=api_key)
+    client = OpenAI(api_key=api_key, base_url=os.environ.get("OPENAI_BASE_URL") or None)
 
     # Decide which dataframe to iterate over
     if all_columns:

@@ -340,10 +340,20 @@ def _get_openai_client() -> OpenAI:
     global _openai_client
     if _openai_client is None:
         api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
+        base_url = os.environ.get("OPENAI_BASE_URL") or None
+        if not api_key and not base_url:
             raise RuntimeError("OPENAI_API_KEY is required when --provider gpt/custom")
-        _openai_client = OpenAI(api_key=api_key)
+        # A local vLLM endpoint accepts any key; default a placeholder when only base_url is set.
+        _openai_client = OpenAI(api_key=api_key or "EMPTY", base_url=base_url)
     return _openai_client
+
+
+def _vllm_kwargs() -> Dict[str, Any]:
+    """Extra request body for a local vLLM endpoint: disable Qwen3 'thinking' so
+    the model returns the JSON answer directly. No-op against real OpenAI."""
+    if os.environ.get("OPENAI_BASE_URL"):
+        return {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+    return {}
 
 
 def call_gpt_and_eval(
@@ -382,6 +392,7 @@ def call_gpt_and_eval(
                         {"role": "user", "content": prompt},
                     ],
                     max_completion_tokens=4096,
+                    **_vllm_kwargs(),
                 )
             else:
                 resp = client.chat.completions.create(
@@ -395,6 +406,7 @@ def call_gpt_and_eval(
                     ],
                     temperature=0,
                     max_tokens=4096,
+                    **_vllm_kwargs(),
                 )
 
             raw_text = resp.choices[0].message.content or ""

@@ -1,0 +1,53 @@
+# --- Python / envs ---
+.venv/
+.venv-vllm/
+__pycache__/
+*.pyc
+*.pyo
+
+# --- Logs, caches, scratch ---
+*.log
+.table_rows.pkl
+.DS_Store
+__MACOSX/
+.ipynb_checkpoints/
+
+# --- Large model weights / binaries (never commit) ---
+*.safetensors
+*.gguf
+*.bin
+*.pt
+*.ckpt
+
+# --- Pipeline / experiment outputs ---
+pipeline_results/
+baseline_outputs/
+evaluation_outputs/
+analysis_outputs/
+
+# --- Paper PDF (not for redistribution) ---
+paper/
+
+# ============================================================
+# DATASETS — license forbids redistribution. Keep the *.py
+# preprocessing code, ignore all downloaded/derived data.
+# ============================================================
+# generic data archives anywhere
+*.zip
+*.sqlite
+*.parquet
+
+# BIRD (raw + extracted + built splits)
+data_selection/BIRD/_raw/
+data_selection/BIRD/dev_20240627/
+data_selection/BIRD/train/
+data_selection/BIRD/splits/
+
+# TableEval (raw jsonl + built split)
+data_selection/TableEval/*.jsonl
+data_selection/TableEval/*.json
+
+# MMQA (raw + converted + built splits)
+data_selection/MMQA/_raw/
+data_selection/MMQA/splits/
+data_selection/MMQA/Synthesized_*.json
