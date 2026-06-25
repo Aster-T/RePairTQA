@@ -139,6 +139,10 @@ def compute_one(tokenizer, sample: dict, representation: str,
     text_tok = _count_tokens_in_span(offsets, bounds["text"])
 
     tables = _tables_for(sample, representation)
+    # Cap rows so number_fragmentation/n_cells stay tractable on monster tables
+    # (mirrors the prompt-side cap in config.MAX_TABLE_ROWS).
+    tables = [{**t, "table_content": t.get("table_content", [])[:config.MAX_TABLE_ROWS]}
+              for t in tables]
     n_cells = sum(len(t.get("table_content", [])) * max(1, len(t.get("table_columns", [])))
                   for t in tables)
     numinfo = number_fragmentation(tokenizer, tables)

@@ -38,6 +38,13 @@ CUDA_DEVICES = os.environ.get("CUDA_VISIBLE_DEVICES", "2,3")
 #     use per-layer reduce-and-free hooks and still cap the sequence length). --
 MAX_L = int(os.environ.get("ANALYSIS_MAX_L", "4096"))
 
+# Cap table rows when building prompts / counting cells, so monster tables
+# (e.g. MMQA M2 with up to ~190k rows) don't make CPU tokenization hang. The
+# attention pass truncates to MAX_L tokens anyway, and ~1000 rows already far
+# exceeds MAX_L for typical widths, so this is a tractability bound, not a
+# change to the representations themselves.
+MAX_TABLE_ROWS = int(os.environ.get("ANALYSIS_MAX_TABLE_ROWS", "1000"))
+
 # --- vLLM endpoint (accuracy / data-prep phases) ---------------------------
 VLLM_PORT = int(os.environ.get("VLLM_PORT", "8100"))
 VLLM_BASE_URL = os.environ.get("OPENAI_BASE_URL", f"http://localhost:{VLLM_PORT}/v1")
@@ -72,7 +79,7 @@ def build_prompt(sample: dict, data_type: str) -> str:
     s5 = load_s5()
     verbal = [v["text"] for v in sample.get("verbalized_data", [])]
     cols_list = [t["table_columns"] for t in sample.get("tables", [])]
-    rows_list = [t["table_content"] for t in sample.get("tables", [])]
+    rows_list = [t["table_content"][:MAX_TABLE_ROWS] for t in sample.get("tables", [])]
     table_names = sample.get("table_names", None)
     _, prompt = s5.estimate_prompt_tokens(
         cols_list,
@@ -113,7 +120,7 @@ def build_prompt_from_raw(sample: dict) -> str:
     table_entries = raw.get("tables") or sample.get("tables", [])
     table_names = raw.get("table_names") or sample.get("table_names", None)
     cols_list = [t["table_columns"] for t in table_entries]
-    rows_list = [t["table_content"] for t in table_entries]
+    rows_list = [t["table_content"][:MAX_TABLE_ROWS] for t in table_entries]
     _, prompt = s5.estimate_prompt_tokens(
         cols_list, rows_list, [], sample["Question"],
         data_type="structured", model="gpt-4o", table_names=table_names,
