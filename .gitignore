@@ -51,3 +51,4 @@ data_selection/TableEval/*.json
 data_selection/MMQA/_raw/
 data_selection/MMQA/splits/
 data_selection/MMQA/Synthesized_*.json
+/failures.csv

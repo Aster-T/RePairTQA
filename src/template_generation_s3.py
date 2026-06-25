@@ -16,6 +16,7 @@ import json
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
@@ -46,6 +47,8 @@ def call_gpt(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
                 max_tokens=max_tokens,
+                **({"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+                   if os.environ.get("OPENAI_BASE_URL") else {}),
             )
             message = response.choices[0].message
             return (message.content or "").strip()
@@ -198,6 +201,7 @@ def generate_templates(
     model: str,
     max_tokens: int,
     all_columns: bool,
+    workers: int = 1,
 ) -> None:
     """
     Main entry for generating templates.
@@ -230,7 +234,9 @@ def generate_templates(
 
     output_rows: List[Dict[str, Any]] = []
 
-    for idx, row in tqdm(rows, total=total_rows, desc="Generating templates"):
+    # Pass 1: build prompts (cheap, CPU-only).
+    work: List[Dict[str, Any]] = []
+    for idx, row in rows:
         db = str(row["db"])
         table = str(row["table"])
         key = (db, table)
@@ -269,14 +275,25 @@ def generate_templates(
             sel_cols=", ".join(selected_columns),
             example_block=example_block,
         )
+        work.append({
+            "idx": idx, "db": db, "table": table,
+            "selected_columns": selected_columns, "prompt": prompt,
+        })
 
-        print(f"[{idx + 1}/{total_rows}] {db}.{table} → GPT")
-        raw_output = call_gpt(
-            client=client,
-            prompt=prompt,
-            model=model,
-            max_tokens=max_tokens,
-        )
+    # Pass 2: LLM calls (concurrent; deterministic, ex.map preserves order).
+    def _call(w: Dict[str, Any]) -> str:
+        return call_gpt(client=client, prompt=w["prompt"], model=model, max_tokens=max_tokens)
+
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            raw_outputs = list(tqdm(ex.map(_call, work), total=len(work), desc="Generating templates"))
+    else:
+        raw_outputs = [_call(w) for w in tqdm(work, total=len(work), desc="Generating templates")]
+
+    # Pass 3: parse + write back (original order).
+    for w, raw_output in zip(work, raw_outputs):
+        idx, db, table = w["idx"], w["db"], w["table"]
+        selected_columns = w["selected_columns"]
 
         clean_output = clean_json_markdown(raw_output)
 
@@ -387,6 +404,13 @@ def parse_args() -> argparse.Namespace:
         help="If set, ignore existing column1..columnN in csv_templates and "
         "build combinations from all columns (matched + unmatched) in csv_matched.",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Concurrent LLM requests (default 1 = sequential). Higher values "
+             "batch through vLLM; results are identical (temperature=0).",
+    )
     return parser.parse_args()
 
 
@@ -400,6 +424,7 @@ def main() -> None:
         model=args.model,
         max_tokens=args.max_tokens,
         all_columns=args.all_columns,
+        workers=args.workers,
     )
 
 

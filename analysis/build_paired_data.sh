@@ -27,22 +27,24 @@ $PY src/column_selection_s2.py \
   --csv_cols_out "$OUT/col_labels.csv" \
   --csv_tmpl_out "$OUT/col_combinations.csv" \
   --prompt_template_path prompts/column_selection.txt \
-  --model "$MODEL" --api_key "$OPENAI_API_KEY"
+  --model "$MODEL" --api_key "$OPENAI_API_KEY" --workers "${WORKERS:-1}"
 
 echo "[A3] template generation --all_columns (s3, LLM via vLLM)"
 $PY src/template_generation_s3.py \
   --csv_templates "$OUT/col_combinations.csv" \
   --csv_matched "$OUT/table_match.csv" \
   --prompt_template_path prompts/template_generation.txt \
-  --model "$MODEL" --api_key "$OPENAI_API_KEY" --all_columns
+  --model "$MODEL" --api_key "$OPENAI_API_KEY" --all_columns --workers "${WORKERS:-1}"
 
 echo "[A4] row-based verbalization (s4_1) -> verbalized_data + raw_tables"
+NOSQL_FLAG=""
+[ "${NO_SQL:-0}" = "1" ] && NOSQL_FLAG="--no_sql"   # for datasets without SQL (TableEval/MMQA)
 $PY src/verbalization_row_s4_1.py \
   --data_path "$DATA" \
   --template_path "$OUT/col_combinations_all_columns.csv" \
   --output_path "$OUT/example_verbalized.json" \
   --failed_path "$OUT/example_failed.json" \
-  --ratio "${RATIO:-0.5}"
+  --ratio "${RATIO:-0.5}" $NOSQL_FLAG
 
 echo "[A] done -> $OUT/example_verbalized.json"
 $PY - "$OUT/example_verbalized.json" <<'PY'

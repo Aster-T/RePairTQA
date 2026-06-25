@@ -66,6 +66,13 @@ Notes from reproducing this pipeline with **open-source models (Qwen3-32B via vL
 - **Qwen3 "thinking" mode** must be disabled for QA or JSON answer parsing breaks: clients pass `chat_template_kwargs={"enable_thinking": false}`.
 - Large datasets/weights are **git-ignored** and must **not** be committed (see Disclosure — dataset redistribution is not permitted).
 
+### Running at scale (this fork)
+- **vLLM 0.9.2 + transformers `aimv2` clash:** vLLM only pins `transformers>=4.51.1`, so a fresh env grabs transformers 5.x whose built-in `aimv2` collides with vLLM's own registration (`ValueError: 'aimv2' is already used`). Pin `transformers==4.53.3` in the vLLM env.
+- **Heterogeneous-GPU trap:** on a box with mixed cards (e.g. A800 + 4090), CUDA defaults to *fastest-first* ordering, so `CUDA_VISIBLE_DEVICES=2,3` can select the **wrong** GPUs. Export `CUDA_DEVICE_ORDER=PCI_BUS_ID` so indices match `nvidia-smi` (the serve / attention scripts do this).
+- **BIRD row-cache staleness:** `bird_pipeline.py` caches `.table_rows.pkl` and *reuses it if present without checking coverage*. If you build splits before all DBs are extracted, train tables are missing → `rows_map.get(key, 0)` returns 0 → they pass the "≤100 rows = short" filter AND `fetch_table_content` pulls the **entire** (often huge) table uncapped → a 30+GB split + OOM in the answers step. Fix: delete `.table_rows.pkl` and rebuild once *all* train+dev DBs are present.
+- **TableEval duplicate headers:** its flattened financial-report tables have repeated/empty column names; `utils.table_dict_to_df` now uniquifies them so pandas doesn't raise `InvalidIndexError`.
+- **Concurrency:** `column_selection_s2.py`, `template_generation_s3.py`, `llm_infer_s5.py` take `--workers N` (default 1). Higher values batch through vLLM (~13× at 16, ~22× at 32 here). Short outputs (s2/s5) are bit-identical across worker counts; long outputs (s3 templates) vary run-to-run *regardless* of concurrency — that's vLLM's inherent greedy non-determinism, not the parallelism, and is the same variability the paper's LLM-generated templates already have.
+
 ---
 ## 🚀 Quick Tour
 Five ready-to-use bash scripts are included for quick runs:

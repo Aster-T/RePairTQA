@@ -11,6 +11,9 @@ PY=.venv/bin/python
 IN=${1:-pipeline_results/run_example/example_verbalized.json}
 OUT=${OUT:-analysis_outputs}
 ACC=${ACC:-baseline_outputs/example_qwen3}
+# PCI-bus order so CUDA_VISIBLE_DEVICES=2,3 maps to the 4090s, not the A800s
+# (heterogeneous box; CUDA defaults to fastest-first ordering).
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-2,3}
 export QWEN3_PATH=${QWEN3_PATH:-/home/amax/models/Qwen3-32B}
 MAX_L=${MAX_L:-4096}

@@ -72,8 +72,10 @@ def _reduce(layer_idx: int, attn_weights: torch.Tensor) -> None:
     if not qpos:
         return
     a = a_all[:, qpos, :]            # [n_heads, n_q, kv_len]
-    ev = ctx.evidence_keys
-    st = ctx.structural_keys
+    # device_map="auto" can place layers on different GPUs; align index tensors
+    # to whatever device this layer's attention landed on.
+    ev = ctx.evidence_keys.to(a.device)
+    st = ctx.structural_keys.to(a.device)
 
     ev_mass = a.index_select(-1, ev).sum(-1) if ev.numel() else torch.zeros_like(a[..., 0])
     st_mass = a.index_select(-1, st).sum(-1) if st.numel() else torch.zeros_like(a[..., 0])

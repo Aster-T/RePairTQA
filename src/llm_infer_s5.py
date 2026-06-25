@@ -44,6 +44,7 @@ import argparse
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import tiktoken
@@ -271,6 +272,13 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="API key for the selected provider (overrides env var if set).",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Concurrent inference requests (default 1 = sequential). Higher "
+             "values batch through vLLM; results are identical (temperature=0).",
     )
     return parser.parse_args()
 
@@ -518,7 +526,9 @@ def main() -> None:
         if args.structured_output_file
         else open(dummy_path, "w", encoding="utf-8")) as fout_struct:
 
-        for sample in tqdm(samples, desc="Evaluating"):
+        # Pass 1: build prompts (cheap, CPU-only).
+        items: List[Dict[str, Any]] = []
+        for sample in samples:
             question = sample["Question"]
             gt = sample["answer"]
             sid = sample.get("id_", None)
@@ -530,7 +540,6 @@ def main() -> None:
             rows_list = [t["table_content"] for t in sample.get("tables", [])]
             table_names = sample.get("table_names", None)
 
-            # ---- Main run (configured data_type) ----
             _, prompt = estimate_prompt_tokens(
                 cols_list,
                 rows_list,
@@ -541,13 +550,54 @@ def main() -> None:
                 table_names=table_names,
             )
 
-            pred, error, em, pm = infer(prompt, gt)
+            struct_prompt = None
+            if args.structured_output_file:
+                raw_tables = sample.get("raw_tables", {})
+                table_names_raw = raw_tables.get("table_names", [])
+                table_entries = raw_tables.get("tables", [])
+                if len(table_names_raw) != len(table_entries):
+                    print(f"Raw table count mismatch for sample id={sid}")
+                else:
+                    raw_cols_list = [t["table_columns"] for t in table_entries]
+                    raw_rows_list = [t["table_content"] for t in table_entries]
+                    _, struct_prompt = estimate_prompt_tokens(
+                        raw_cols_list,
+                        raw_rows_list,
+                        [],
+                        question,
+                        data_type="structured",
+                        model="gpt-4o",
+                        table_names=table_names_raw,
+                    )
+
+            items.append({
+                "sid": sid, "question": question, "gt": gt,
+                "main_prompt": prompt, "struct_prompt": struct_prompt,
+            })
+
+        # Pass 2: inference (concurrent; each infer is deterministic with
+        # temperature=0 and ex.map preserves order, so output == sequential).
+        def _run(it: Dict[str, Any]) -> Dict[str, Any]:
+            out: Dict[str, Any] = {"main": infer(it["main_prompt"], it["gt"])}
+            if it["struct_prompt"] is not None:
+                out["struct"] = infer(it["struct_prompt"], it["gt"])
+            return out
+
+        if args.workers > 1:
+            with ThreadPoolExecutor(max_workers=args.workers) as ex:
+                results = list(tqdm(ex.map(_run, items), total=len(items), desc="Evaluating"))
+        else:
+            results = [_run(it) for it in tqdm(items, total=len(items), desc="Evaluating")]
+
+        # Pass 3: write outputs in order + accumulate EM/PM.
+        for it, res in zip(items, results):
+            pred, error, em, pm = res["main"]
             fout_main.write(
                 json.dumps(
                     {
-                        "id": sid,
-                        "question": question,
-                        "ground_truth": gt,
+                        "id": it["sid"],
+                        "question": it["question"],
+                        "ground_truth": it["gt"],
                         "prediction": pred,
                         "error": error,
                         "EM": em,
@@ -564,35 +614,14 @@ def main() -> None:
             processed += 1
             print(f"{processed} | EM={em} PM={pm}")
 
-            # ---- Structured baseline (raw tables only) ----
-            if args.structured_output_file:
-                raw_tables = sample.get("raw_tables", {})
-                table_names_raw = raw_tables.get("table_names", [])
-                table_entries = raw_tables.get("tables", [])
-
-                if len(table_names_raw) != len(table_entries):
-                    print(f"Raw table count mismatch for sample id={sid}")
-                    continue
-
-                raw_cols_list = [t["table_columns"] for t in table_entries]
-                raw_rows_list = [t["table_content"] for t in table_entries]
-
-                _, prompt_s = estimate_prompt_tokens(
-                    raw_cols_list,
-                    raw_rows_list,
-                    [],
-                    question,
-                    data_type="structured",
-                    model="gpt-4o",
-                    table_names=table_names_raw,
-                )
-                pred_s, error_s, em_s, pm_s = infer(prompt_s, gt)
+            if "struct" in res:
+                pred_s, error_s, em_s, pm_s = res["struct"]
                 fout_struct.write(
                     json.dumps(
                         {
-                            "id": sid,
-                            "question": question,
-                            "ground_truth": gt,
+                            "id": it["sid"],
+                            "question": it["question"],
+                            "ground_truth": it["gt"],
                             "prediction": pred_s,
                             "error": error_s,
                             "EM": em_s,

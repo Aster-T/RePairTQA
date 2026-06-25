@@ -24,13 +24,13 @@ $PY src/llm_infer_s5.py \
   --output_file "$OUT/semi-structured.jsonl" \
   --structured_output_file "$OUT/structured.jsonl" \
   --data_type semi-structured \
-  --model "$MODEL" --provider custom --api_key "$OPENAI_API_KEY" ${MAX_SAMPLES:+--max_samples $MAX_SAMPLES}
+  --model "$MODEL" --provider custom --api_key "$OPENAI_API_KEY" --workers "${WORKERS:-1}" ${MAX_SAMPLES:+--max_samples $MAX_SAMPLES}
 
 echo "[B2] unstructured"
 $PY src/llm_infer_s5.py \
   --input_file "$IN" \
   --output_file "$OUT/unstructured.jsonl" \
   --data_type unstructured \
-  --model "$MODEL" --provider custom --api_key "$OPENAI_API_KEY" ${MAX_SAMPLES:+--max_samples $MAX_SAMPLES}
+  --model "$MODEL" --provider custom --api_key "$OPENAI_API_KEY" --workers "${WORKERS:-1}" ${MAX_SAMPLES:+--max_samples $MAX_SAMPLES}
 
 echo "[B] done -> $OUT/{structured,semi-structured,unstructured}.jsonl"

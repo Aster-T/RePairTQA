@@ -21,7 +21,14 @@ def read_json(path):
 def table_dict_to_df(table_dict):
     columns = table_dict["table_columns"]
     content = table_dict["table_content"]
-    return pd.DataFrame(content, columns=columns)
+    # Disambiguate duplicate/empty column names (e.g. TableEval's flattened
+    # financial-report headers) so downstream pandas ops don't choke on a
+    # non-unique column index. Verbalization logic is unchanged.
+    seen, uniq = {}, []
+    for c in map(str, columns):
+        seen[c] = seen.get(c, -1) + 1
+        uniq.append(c if seen[c] == 0 else f"{c}.{seen[c]}")
+    return pd.DataFrame(content, columns=uniq)
 
 def df_to_dict_table(df):
     """

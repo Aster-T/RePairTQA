@@ -19,10 +19,12 @@ import json
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Iterable, List, Tuple
 
 import pandas as pd
 from openai import OpenAI
+from tqdm import tqdm
 
 DEFAULT_MODEL = "gpt-4o-2024-11-20"
 FAILURE_CSV = "failures.csv"
@@ -134,6 +136,8 @@ def call_gpt(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
                 max_tokens=max_tokens,
+                **({"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+                   if os.environ.get("OPENAI_BASE_URL") else {}),
             )
             message = response.choices[0].message
             return (message.content or "").strip()
@@ -278,6 +282,14 @@ def parse_args() -> argparse.Namespace:
         help=f"OpenAI model name (default: {DEFAULT_MODEL}).",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Concurrent LLM requests (default 1 = sequential). Higher values "
+             "batch through vLLM; results are identical since each call is "
+             "deterministic (temperature=0).",
+    )
+    parser.add_argument(
         "--api_key",
         required=True,
         help="OpenAI API key.",
@@ -317,6 +329,8 @@ def main() -> None:
 
     total_rows = len(df)
 
+    # Pass 1: build prompts (cheap, CPU-only).
+    work: List[Dict[str, Any]] = []
     for idx, row in df.iterrows():
         db = str(row["db"])
         table = str(row["table"])
@@ -339,10 +353,23 @@ def main() -> None:
             all_cols=all_cols,
             column_examples=column_examples,
         )
+        work.append({"db": db, "table": table, "key": key, "prompt": prompt})
 
-        print(f"[{idx + 1}/{total_rows}] Classifying columns for {key}")
-        llm_output = call_gpt(client, prompt, args.model)
+    # Pass 2: LLM calls. Concurrency only changes dispatch; each call is
+    # deterministic (temperature=0) and ex.map preserves order, so the output
+    # is byte-identical to the sequential path.
+    def _call(w: Dict[str, Any]) -> str:
+        return call_gpt(client, w["prompt"], args.model)
 
+    if args.workers > 1:
+        with ThreadPoolExecutor(max_workers=args.workers) as ex:
+            outputs = list(tqdm(ex.map(_call, work), total=len(work), desc="Column selection"))
+    else:
+        outputs = [_call(w) for w in tqdm(work, total=len(work), desc="Column selection")]
+
+    # Pass 3: parse + accumulate (original order).
+    for w, llm_output in zip(work, outputs):
+        db, table, key = w["db"], w["table"], w["key"]
         yesno_dict, combinations = parse_llm_output(llm_output)
 
         if not yesno_dict and not combinations:

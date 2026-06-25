@@ -24,6 +24,11 @@ VENV=${VENV:-/home/amax/al/RePairTQA/.venv-vllm}
 unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy || true
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
+# CRITICAL on this heterogeneous box (2x A800 + 2x 4090): CUDA defaults to
+# fastest-first ordering, so CUDA_VISIBLE_DEVICES=2,3 would grab the A800s, not
+# the 4090s. Force PCI-bus order so 2,3 == the two 4090s (matches nvidia-smi).
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
+
 if [[ "${KILL_EXISTING:-0}" == "1" ]]; then
   echo "[serve] stopping existing vLLM EngineCore processes ..."
   pkill -f 'VLLM::EngineCore' 2>/dev/null || true
@@ -32,8 +37,9 @@ if [[ "${KILL_EXISTING:-0}" == "1" ]]; then
 fi
 
 echo "[serve] starting vLLM: $MODEL_PATH on GPUs $GPUS (TP=$TP) port $PORT"
-CUDA_VISIBLE_DEVICES="$GPUS" exec "$VENV/bin/python" -m vllm.entrypoints.openai.api_server \
-  --model "$MODEL_PATH" \
+# `vllm serve <model>` == `python -m vllm.entrypoints.openai.api_server --model <model>`
+# (same server, same args). Using the venv's vllm binary pins the environment.
+CUDA_VISIBLE_DEVICES="$GPUS" exec "$VENV/bin/vllm" serve "$MODEL_PATH" \
   --served-model-name "$SERVED_NAME" \
   --tensor-parallel-size "$TP" \
   --port "$PORT" \

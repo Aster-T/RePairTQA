@@ -265,6 +265,7 @@ def run(
     output_path: str,
     failed_path: str,
     ratio: float,
+    no_sql: bool = False,
 ) -> None:
     """
     End-to-end verbalization using all-column templates.
@@ -368,17 +369,20 @@ def run(
                 verbalized_data.append({"text": paragraph})
         new_item["verbalized_data"] = verbalized_data
 
-        # Re-run SQL to get the final answer
-        sql = item.get("SQL", "")
-        if any(tbl == "appellations" for tbl in table_names) and db == "wine_1":
-            sql = re.sub(r"\bAppelation\b", "Appellation", sql)
-        answer = execute_sql(sql, new_item["raw_tables"])
-        new_item["answer"] = answer
-        item["SQL"] = sql
+        # Re-run SQL to recompute the answer, UNLESS --no_sql is set (then keep the
+        # original gold answer as-is). Mirrors verbalization_col_s4.py's --no_sql;
+        # required for datasets without SQL (e.g. TableEval, MMQA).
+        if not no_sql:
+            sql = item.get("SQL", "")
+            if any(tbl == "appellations" for tbl in table_names) and db == "wine_1":
+                sql = re.sub(r"\bAppelation\b", "Appellation", sql)
+            answer = execute_sql(sql, new_item["raw_tables"])
+            new_item["answer"] = answer
+            item["SQL"] = sql
 
-        if (not answer) or any(pd.isna(v) for row in answer for v in row):
-            failed_items.append(new_item)
-            continue
+            if (not answer) or any(pd.isna(v) for row in answer for v in row):
+                failed_items.append(new_item)
+                continue
 
         data_new_ret.append(new_item)
 
@@ -430,6 +434,12 @@ def parse_args() -> argparse.Namespace:
         default=0.5,
         help="Fraction of rows per table to verbalize into text (default: 0.5).",
     )
+    parser.add_argument(
+        "--no_sql",
+        action="store_true",
+        help="Skip SQL re-execution and keep the original gold answer "
+             "(for datasets without SQL, e.g. TableEval / MMQA).",
+    )
     return parser.parse_args()
 
 
@@ -443,4 +453,5 @@ if __name__ == "__main__":
         output_path=args.output_path,
         failed_path=args.failed_path,
         ratio=args.ratio,
+        no_sql=args.no_sql,
     )
