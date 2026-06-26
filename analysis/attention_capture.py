@@ -237,15 +237,24 @@ def run(input_json: str, output_jsonl: str, model_path: Optional[str] = None,
         data = data[:max_samples]
 
     model, tok, n_layers = load_model(model_path)
+    skipped = 0
     with open(output_jsonl, "w", encoding="utf-8") as fout:
         for i, sample in enumerate(data):
             for rep in config.REPRESENTATIONS:
-                rec = capture_sample(model, tok, n_layers, sample, rep, max_l)
-                fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                fout.flush()
+                try:
+                    rec = capture_sample(model, tok, n_layers, sample, rep, max_l)
+                    fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                    fout.flush()
+                except Exception as e:  # OOM / per-sample failure: skip, keep the split alive
+                    global _CTX
+                    _CTX = None
+                    torch.cuda.empty_cache()
+                    skipped += 1
+                    print(f"  [SKIP] {sample.get('id_')}/{rep}: {type(e).__name__}: {str(e)[:100]}")
             torch.cuda.empty_cache()
             print(f"[{i+1}/{len(data)}] {sample.get('id_')} done | "
                   f"peak={torch.cuda.max_memory_allocated()/1e9:.1f}GB")
+    print(f"[attention] done: {len(data)} samples, {skipped} (sample,rep) skipped")
 
 
 def micro_test(model_path: Optional[str] = None, l: int = 512) -> None:
