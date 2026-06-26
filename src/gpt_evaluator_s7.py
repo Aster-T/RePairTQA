@@ -2,6 +2,7 @@
 import json
 import os
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 from openai import OpenAI
 
@@ -35,6 +36,8 @@ Please respond with only one word: "CORRECT" or "INCORRECT".
             model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
+            **({"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+               if os.environ.get("OPENAI_BASE_URL") else {}),
         )
         return response.choices[0].message.content.strip().upper()
     except Exception as e:
@@ -44,40 +47,53 @@ Please respond with only one word: "CORRECT" or "INCORRECT".
 def main(args):
     # Load API key
     api_key = args.api_key or os.getenv("OPENAI_API_KEY")
-    if not api_key:
+    base_url = os.environ.get("OPENAI_BASE_URL") or None
+    if not api_key and not base_url:
         raise RuntimeError("Please set OPENAI_API_KEY or pass --api_key")
 
-    client = OpenAI(api_key=api_key)
+    client = OpenAI(api_key=api_key or "EMPTY", base_url=base_url)
 
     input_file = args.input_file
     output_file = args.output_file
     model = args.model
     total_length = args.total_length
 
-    results = []
-    correct_count = 0
-    total_count = 0
-
     print(f"🔍 Evaluating with model: {model}")
     print(f"📂 Input:  {input_file}")
     print(f"💾 Output: {output_file}")
 
+    # Pass 1: load judgeable items.
+    items = []
     with open(input_file, "r", encoding="utf-8") as f:
-        for line in tqdm(f, total=total_length or None):
-            item = json.loads(line)
-            pred_raw = item.get("prediction", "")
-            gt_raw = item.get("ground_truth", "")
-
-            if not gt_raw:
+        for line in f:
+            line = line.strip()
+            if not line:
                 continue
+            item = json.loads(line)
+            if not item.get("ground_truth"):
+                continue
+            items.append(item)
 
-            label = gpt_check_correctness(client, pred_raw, gt_raw, model=model)
-            item["gpt_eval"] = label
-            results.append(item)
+    # Pass 2: judge (concurrent; temperature=0 deterministic, order preserved).
+    def _judge(item):
+        return gpt_check_correctness(client, item.get("prediction", ""),
+                                     item.get("ground_truth", ""), model=model)
+    if args.workers > 1:
+        with ThreadPoolExecutor(max_workers=args.workers) as ex:
+            labels = list(tqdm(ex.map(_judge, items), total=len(items)))
+    else:
+        labels = [_judge(it) for it in tqdm(items, total=len(items))]
 
-            total_count += 1
-            if label == "CORRECT":
-                correct_count += 1
+    # Pass 3: attach labels + tally (original order).
+    results = []
+    correct_count = 0
+    total_count = 0
+    for item, label in zip(items, labels):
+        item["gpt_eval"] = label
+        results.append(item)
+        total_count += 1
+        if label == "CORRECT":
+            correct_count += 1
 
     # Write results
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
@@ -104,6 +120,8 @@ if __name__ == "__main__":
                         help="OpenAI API key (optional if OPENAI_API_KEY is set).")
     parser.add_argument("--total_length", type=int, default=None,
                         help="Total samples for tqdm progress bar (optional).")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Concurrent judge requests (default 1 = sequential).")
 
     args = parser.parse_args()
     main(args)

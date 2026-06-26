@@ -52,3 +52,12 @@ data_selection/MMQA/_raw/
 data_selection/MMQA/splits/
 data_selection/MMQA/Synthesized_*.json
 /failures.csv
+
+# --- Editor / Claude Code scratch ---
+.history/
+# third-party skill (uploaded locally; license unclear -> don't redistribute)
+.claude/skills/frontend-design/
+# generated dashboard page + payload (regenerate via the results-dashboard skill);
+# the vendored echarts.min.js under dashboard/vendor/ IS tracked for offline use
+dashboard/data.json
+dashboard/index.html

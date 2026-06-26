@@ -180,8 +180,8 @@ def run(input_json: str, output_jsonl: str, tokenizer_path: Optional[str] = None
             rec = compute_one(tok, sample, rep, max_length)
             rec["split"] = split
             per_rep[rep] = rec
-        # length inflation relative to structured
-        base = per_rep["structured"]["total_tokens"] or 1
+        # length inflation relative to structured (if present in this run)
+        base = (per_rep.get("structured") or {}).get("total_tokens") or 1
         for rep, rec in per_rep.items():
             rec["length_inflation_ratio"] = rec["total_tokens"] / base
             records.append(rec)

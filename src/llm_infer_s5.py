@@ -98,12 +98,19 @@ def format_tables_markdown(
     rows_list: List[List[List[Any]]],
     table_names: Optional[List[str]] = None,
 ) -> str:
-    """Format multiple tables as Markdown blocks separated by blank lines."""
+    """Format multiple tables as Markdown blocks separated by blank lines.
+
+    Tables with no columns (e.g. a fully-verbalized table whose structured
+    remainder is empty) are skipped so the otherwise-unused table block doesn't
+    crash markdown_table_text on empty input.
+    """
     names = table_names or [None] * len(cols_list)
-    return "\n\n".join(
+    blocks = [
         markdown_table_text(c, r, name)
         for c, r, name in zip(cols_list, rows_list, names)
-    )
+        if c  # skip empty-column tables
+    ]
+    return "\n\n".join(blocks)
 
 
 def build_prompt_md(
@@ -279,6 +286,15 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Concurrent inference requests (default 1 = sequential). Higher "
              "values batch through vLLM; results are identical (temperature=0).",
+    )
+    parser.add_argument(
+        "--verbal_field",
+        type=str,
+        default="verbalized_data",
+        help="Which sample field holds the verbalized text blocks. Default "
+             "'verbalized_data' (the ratio=0.5 semi/unstructured text). Set to "
+             "'verbalized_data_full' to score the FULL unstructured view (every "
+             "row verbalized) without touching the semi-structured config.",
     )
     return parser.parse_args()
 
@@ -535,7 +551,7 @@ def main() -> None:
             if gt is None:
                 continue
 
-            verbal = [v["text"] for v in sample.get("verbalized_data", [])]
+            verbal = [v["text"] for v in sample.get(args.verbal_field, [])]
             cols_list = [t["table_columns"] for t in sample.get("tables", [])]
             rows_list = [t["table_content"] for t in sample.get("tables", [])]
             table_names = sample.get("table_names", None)

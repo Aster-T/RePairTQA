@@ -122,8 +122,9 @@ def verbalize_table(
     n_rows = len(df_clean)
     n_verbal = int(n_rows * ratio)
 
-    # If ratio is too small or too large, skip verbalization and keep table only.
-    if n_verbal < 1 or n_verbal >= n_rows:
+    # If ratio is too small skip; ratio==1.0 (n_verbal==n_rows) is allowed so the
+    # whole table can be verbalized into text (the "full unstructured" view).
+    if n_verbal < 1 or n_verbal > n_rows:
         semi_table = df_clean.drop(columns=placeholders, errors="ignore")
         return semi_table, placeholders, "", df_clean
 

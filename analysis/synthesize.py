@@ -32,7 +32,7 @@ import pandas as pd
 from . import config
 
 SPLITS = ["bird_S1", "bird_S3", "bird_S4", "bird_S5", "tableeval_S2", "mmqa_M1", "mmqa_M2"]
-REPS = ["structured", "semi-structured", "unstructured"]
+REPS = ["structured", "semi-structured", "unstructured", "unstructured_full"]
 OUT = config.OUT_DIR / "synthesis"
 
 
@@ -56,7 +56,7 @@ def load_merged() -> pd.DataFrame:
 
 
 METRICS = [
-    "EM", "PM", "total_tokens", "length_inflation_ratio", "fertility_cell",
+    "EM", "PM", "judge", "total_tokens", "length_inflation_ratio", "fertility_cell",
     "structural_token_share", "number_frag_mean", "evidence_token_count",
     "evidence_rel_pos", "prompt_evidence_mass_overall", "prompt_entropy_overall",
     "gold_evidence_mass_overall",
@@ -77,18 +77,35 @@ def pooled(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------- #
-def format_divergence() -> pd.DataFrame:
-    """Per-sample distance between structured vs semi-structured attention profiles.
+def _layer_div(a: dict, b: dict, key: str) -> float:
+    va = np.array((a or {}).get(key) or [])
+    vb = np.array((b or {}).get(key) or [])
+    if va.shape != vb.shape or va.size == 0:
+        return np.nan
+    return float(np.linalg.norm(va - vb))
 
-    Uses the per-layer profiles captured in attn.jsonl:
+
+def format_divergence() -> pd.DataFrame:
+    """Per-sample distance between the structured attention profile and each
+    re-serialized profile (semi-structured, and the FULL unstructured text view)
+    for the SAME content/answer.
+
+    Uses the per-layer profiles captured in attn.jsonl / attn_unstr_full.jsonl:
       - prompt_evidence_mass_layer  : [n_layers]  (attention mass on the answer span)
       - prompt_entropy_layer        : [n_layers]  (dispersion of attention)
-    Divergence = L2 distance between the structured and semi 64-d layer vectors.
-    Joined with EM to test: do format-divergent samples fail more under shift?
+    Divergence = L2 distance between the structured and the other rep's layer
+    vectors. A large divergence = the model processes the two formats differently
+    = format bias; the quantity a debiasing method should drive to 0. Joined with
+    EM to test: do format-divergent samples flip structured✓ -> other✗ more often?
+
+    structured↔unstructured_full is the cleanest contrast: identical content, one
+    as a table, one as full prose (no rows dropped), so divergence isolates the
+    serialization format rather than any content loss.
     """
     rows = []
     for s in SPLITS:
         recs = _read_jsonl(f"analysis_outputs/{s}/attn.jsonl")
+        recs += _read_jsonl(f"analysis_outputs/{s}/attn_unstr_full.jsonl")
         by_id: Dict[str, Dict[str, dict]] = {}
         for r in recs:
             by_id.setdefault(r["id"], {})[r["representation"]] = r
@@ -100,23 +117,25 @@ def format_divergence() -> pd.DataFrame:
             for _, x in md.iterrows():
                 em[(x["id"], x["representation"])] = x.get("EM")
         for _id, reps in by_id.items():
-            st, se = reps.get("structured"), reps.get("semi-structured")
-            if not st or not se:
+            st = reps.get("structured")
+            if not st:
                 continue
-            ev_st = np.array(st.get("prompt_evidence_mass_layer") or [])
-            ev_se = np.array(se.get("prompt_evidence_mass_layer") or [])
-            en_st = np.array(st.get("prompt_entropy_layer") or [])
-            en_se = np.array(se.get("prompt_entropy_layer") or [])
-            if ev_st.shape != ev_se.shape or ev_st.size == 0:
-                continue
-            ev_div = float(np.linalg.norm(ev_st - ev_se))
-            en_div = float(np.linalg.norm(en_st - en_se)) if en_st.shape == en_se.shape and en_st.size else np.nan
-            em_st, em_se = em.get((_id, "structured")), em.get((_id, "semi-structured"))
-            flip = None
-            if em_st is not None and em_se is not None:
-                flip = int(em_st == 1 and em_se == 0)  # structured-correct, semi-wrong
-            rows.append({"split": s, "id": _id, "ev_div": ev_div, "ent_div": en_div,
-                         "EM_structured": em_st, "EM_semi": em_se, "flip_struct_to_semi": flip})
+            em_st = em.get((_id, "structured"))
+            for other in ("semi-structured", "unstructured_full"):
+                ot = reps.get(other)
+                if not ot:
+                    continue
+                ev_div = _layer_div(st, ot, "prompt_evidence_mass_layer")
+                if np.isnan(ev_div):
+                    continue
+                en_div = _layer_div(st, ot, "prompt_entropy_layer")
+                em_ot = em.get((_id, other))
+                flip = (int(em_st == 1 and em_ot == 0)
+                        if em_st is not None and em_ot is not None else None)
+                rows.append({"split": s, "id": _id, "contrast": f"structured~{other}",
+                             "ev_div": ev_div, "ent_div": en_div,
+                             "EM_structured": em_st, "EM_other": em_ot,
+                             "flip_struct_to_other": flip})
     return pd.DataFrame(rows)
 
 
@@ -124,21 +143,23 @@ def write_synthesis_md(master: pd.DataFrame, pool: pd.DataFrame, div: pd.DataFra
     lines = ["# Cross-split synthesis — tokenization × attention × format invariance\n"]
     lines.append("## Pooled representation comparison (all splits)\n")
     lines.append(pool.to_markdown(floatfmt=".4f"))
-    lines.append("\n\n## Format-divergence (structured vs semi attention, per split)\n")
+    lines.append("\n\n## Format-divergence (structured vs re-serialized attention)\n")
     if not div.empty:
-        agg = div.groupby("split").agg(
+        agg = div.groupby("contrast").agg(
             n=("id", "count"), ev_div=("ev_div", "mean"), ent_div=("ent_div", "mean"),
-            flips=("flip_struct_to_semi", "sum"))
+            flips=("flip_struct_to_other", "sum"))
         lines.append(agg.to_markdown(floatfmt=".4f"))
-        # divergence vs flip correlation
-        d = div.dropna(subset=["flip_struct_to_semi", "ev_div"])
-        if len(d) > 10 and d["flip_struct_to_semi"].nunique() > 1:
-            r = d[["ev_div", "flip_struct_to_semi"]].corr().iloc[0, 1]
-            mean_flip = d[d.flip_struct_to_semi == 1]["ev_div"].mean()
-            mean_keep = d[d.flip_struct_to_semi == 0]["ev_div"].mean()
-            lines.append(f"\n\n**Divergence ↔ format-induced failure:** corr(ev_div, flip) = {r:+.3f}; "
-                         f"mean ev_div for flips (struct✓→semi✗) = {mean_flip:.4f} vs kept = {mean_keep:.4f}. "
-                         f"A debiasing method should drive ev_div → 0 (format-invariant attention).")
+        # divergence vs flip correlation, per contrast
+        for contrast, d0 in div.groupby("contrast"):
+            d = d0.dropna(subset=["flip_struct_to_other", "ev_div"])
+            if len(d) > 10 and d["flip_struct_to_other"].nunique() > 1:
+                r = d[["ev_div", "flip_struct_to_other"]].corr().iloc[0, 1]
+                mean_flip = d[d.flip_struct_to_other == 1]["ev_div"].mean()
+                mean_keep = d[d.flip_struct_to_other == 0]["ev_div"].mean()
+                lines.append(f"\n\n**{contrast} — divergence ↔ format-induced failure:** "
+                             f"corr(ev_div, flip) = {r:+.3f}; "
+                             f"mean ev_div for flips (struct✓→other✗) = {mean_flip:.4f} vs kept = {mean_keep:.4f}. "
+                             f"A debiasing method should drive ev_div → 0 (format-invariant attention).")
     lines.append("\n")
     (OUT / "SYNTHESIS.md").write_text("\n".join(lines), encoding="utf-8")
 
@@ -160,8 +181,9 @@ def run() -> None:
     print(pool.to_string(float_format=lambda x: f"{x:.4f}"))
     print(f"\nWrote synthesis -> {OUT}")
     if not div.empty:
-        print(f"format_divergence: {len(div)} paired samples; mean ev_div="
-              f"{div['ev_div'].mean():.4f}")
+        for contrast, d0 in div.groupby("contrast"):
+            print(f"format_divergence [{contrast}]: {len(d0)} paired samples; "
+                  f"mean ev_div={d0['ev_div'].mean():.4f}")
 
 
 if __name__ == "__main__":

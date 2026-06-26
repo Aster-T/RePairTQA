@@ -51,7 +51,9 @@ VLLM_BASE_URL = os.environ.get("OPENAI_BASE_URL", f"http://localhost:{VLLM_PORT}
 
 # The three representations studied (paper's views). The string values match the
 # ``data_type`` argument accepted by src/llm_infer_s5.estimate_prompt_tokens.
-REPRESENTATIONS = ["structured", "semi-structured", "unstructured"]
+REPRESENTATIONS = os.environ.get(
+    "ANALYSIS_REPS", "structured,semi-structured,unstructured"
+).split(",")
 
 
 # --- Bridge to existing pipeline code --------------------------------------
@@ -68,16 +70,21 @@ def load_s5():
     return llm_infer_s5
 
 
-def build_prompt(sample: dict, data_type: str) -> str:
+def build_prompt(sample: dict, data_type: str,
+                 verbal_field: str = "verbalized_data") -> str:
     """Return the exact prompt string for one sample under one representation.
 
     Mirrors the per-sample field extraction in src/llm_infer_s5.main():
       - structured / semi-structured read sample['tables'] (+ verbalized_data)
       - the structured *baseline* the paper reports is built from raw_tables;
         here we expose both via ``data_type`` and the ``use_raw`` switch below.
+
+    ``verbal_field`` selects which text field feeds the verbalized blocks; the
+    full unstructured view passes ``verbalized_data_full`` (every row verbalized)
+    while leaving the semi-structured config on ``verbalized_data`` untouched.
     """
     s5 = load_s5()
-    verbal = [v["text"] for v in sample.get("verbalized_data", [])]
+    verbal = [v["text"] for v in sample.get(verbal_field, [])]
     cols_list = [t["table_columns"] for t in sample.get("tables", [])]
     rows_list = [t["table_content"][:MAX_TABLE_ROWS] for t in sample.get("tables", [])]
     table_names = sample.get("table_names", None)
@@ -109,6 +116,10 @@ def prompt_for(sample: dict, representation: str) -> str:
         return build_prompt_from_raw(sample)
     if representation in ("semi-structured", "unstructured"):
         return build_prompt(sample, representation)
+    if representation == "unstructured_full":
+        # full text-only view: every row verbalized, read from verbalized_data_full
+        # (semi-structured stays on verbalized_data, untouched)
+        return build_prompt(sample, "unstructured", verbal_field="verbalized_data_full")
     raise ValueError(f"Unknown representation: {representation}")
 
 
